@@ -3,10 +3,10 @@ import pandas as pd
 import io
 
 st.set_page_config(layout="wide")
-st.title("📦 선입선출(FEFO) 자동 할당 시스템 (BOX 단위 부분할당 지원)")
+st.title("올리브영 자동 입력 시스템")
 
 # 1. 파일 업로드 
-uploaded_file = st.file_uploader("작업할 엑셀 파일을 업로드하세요", type=['xlsx'])
+uploaded_file = st.file_uploader("서식 파일을 업로드하세요", type=['xlsx'])
 
 if uploaded_file:
     try:
