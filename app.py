@@ -2,7 +2,11 @@ import streamlit as st
 import pandas as pd
 import io
 
-st.set_page_config(layout="wide")
+st.set_page_config(
+    page_title="올리브영 자동 입력 시스템",  
+    page_icon="올영이.png",               
+    layout="wide"
+)
 st.title("올리브영 자동 입력 시스템")
 
 # 1. 파일 업로드 
