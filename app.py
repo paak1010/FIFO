@@ -3,8 +3,8 @@ import pandas as pd
 import io
 
 st.set_page_config(
-    page_title="올리브영 자동 입력 시스템",  
-    page_icon="C:\Users\jhpark\OneDrive - 맨소래담\바탕 화면\올영이.png",               
+    page_title="올리브영 수주 자동화",  # 브라우저 탭에 표시될 이름
+    page_icon="🌿",                 # 브라우저 탭에 표시될 아이콘 (이모지)
     layout="wide"
 )
 st.title("올리브영 자동 입력 시스템")
