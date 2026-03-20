@@ -4,7 +4,7 @@ import io
 
 st.set_page_config(
     page_title="올리브영 자동 입력 시스템",  
-    page_icon="올영이.png",               
+    page_icon=""C:\Users\jhpark\OneDrive - 맨소래담\바탕 화면\올영이.png"",               
     layout="wide"
 )
 st.title("올리브영 자동 입력 시스템")
