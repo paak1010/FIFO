@@ -3,8 +3,8 @@ import pandas as pd
 import io
 
 st.set_page_config(
-    page_title="올리브영 자동 입력 시스템",  # 브라우저 탭에 표시될 이름
-    page_icon="🌿",                 # 브라우저 탭에 표시될 아이콘 (이모지)
+    page_title="올리브영 자동 입력 시스템",
+    page_icon="🌿",
     layout="wide"
 )
 st.title("올리브영 자동 입력 시스템")
@@ -28,13 +28,16 @@ if uploaded_file:
         box_col_name = box_col_candidates[0] if box_col_candidates else None
 
         with st.spinner('재고 매핑 및 BOX 단위 최적화 중...'):
-            # 💡 [허점 2 해결] 동일 유효일자 재고 병합 (화주LOT는 첫 번째 값 사용)
-            # 병합 전 특수 조건(PMM, OC2) 먼저 필터링 적용
+            # 병합 전 특수 조건(PMM, OC2) 및 일반 상품 필터링
             cond_pmm = (df_inv['상품'] == 'ME00621PMM') & (df_inv['유효일자'].dt.year == 2028)
             cond_oc2 = (df_inv['상품'] == 'ME90621OC2') & (df_inv['화주LOT'].fillna('').astype(str).str.contains('분리배출'))
             cond_normal = (~df_inv['상품'].isin(['ME00621PMM', 'ME90621OC2']))
             
             df_inv_filtered = df_inv[cond_pmm | cond_oc2 | cond_normal].copy()
+
+            # 💡 [요청하신 디테일 반영] 환산 수량 기준 내림차순 정렬 
+            # -> 이렇게 하면 합칠 때 '화주LOT'의 첫 번째 값(first)이 가장 수량이 큰 로트가 됩니다.
+            df_inv_filtered = df_inv_filtered.sort_values(by=['상품', '유효일자', '환산'], ascending=[True, True, False])
 
             # Groupby로 환산 수량 합치기
             agg_dict = {'환산': 'sum', '화주LOT': 'first'}
@@ -44,9 +47,10 @@ if uploaded_file:
             df_inv_agg = df_inv_filtered.groupby(['상품', '유효일자'], as_index=False).agg(agg_dict)
             df_inv_agg = df_inv_agg[df_inv_agg['환산'] > 0] # 남은 재고가 있는 것만 유지
 
-            # 💡 [허점 1 해결] 실시간 재고 차감을 위한 반복문 처리
+            # 실시간 재고 차감을 위한 리스트 초기화
             allocated_lots, allocated_dates, allocated_qtys, allocated_statuses = [], [], [], []
 
+            # iterrows로 한 줄씩 처리하며 실시간 차감
             for idx, row in df_order.iterrows():
                 mecode = row['MECODE']
                 order_qty = row['수량']
