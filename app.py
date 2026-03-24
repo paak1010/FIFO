@@ -14,6 +14,17 @@ if uploaded_file:
         df_order = pd.read_excel(uploaded_file, sheet_name='서식(수주업로드)', header=1)
         df_inv = pd.read_excel(uploaded_file, sheet_name='재고', header=2)
 
+        # 💡 [새로 추가된 로직] '잔여일수'부터 맨 끝 열까지 싹둑 자르기
+        if '잔여일수' in df_order.columns:
+            # '잔여일수' 열의 위치(인덱스)를 찾아서 그 뒤로는 전부 삭제
+            start_idx = list(df_order.columns).index('잔여일수')
+            cols_to_drop = df_order.columns[start_idx:]
+            df_order = df_order.drop(columns=cols_to_drop)
+
+        # LOT와 유효일자 열이 날아갔을 경우를 대비해 빈 열 생성
+        if 'LOT' not in df_order.columns: df_order['LOT'] = ''
+        if '유효일자' not in df_order.columns: df_order['유효일자'] = ''
+
         # 데이터 정제
         df_order['MECODE'] = df_order['MECODE'].astype(str).str.replace(r'[^a-zA-Z0-9]', '', regex=True).str.upper()
         df_inv['상품'] = df_inv['상품'].astype(str).str.replace(r'[^a-zA-Z0-9]', '', regex=True).str.upper()
@@ -42,12 +53,13 @@ if uploaded_file:
         else:
             inv_grouped = pd.DataFrame(columns=['상품', '유효일자_보존', '환산', '화주LOT', '유효일자'] + ([box_col_name] if box_col_name else []))
 
+        # 잘려나간 자리에 우리가 만든 결과용 열 깔끔하게 추가
         df_order['할당상태'] = ''
         df_order['부족시_최대가능수량'] = None
         df_order['부족시_LOT'] = ''
         df_order['부족시_유효일자'] = ''
 
-        # 4. 할당 로직 (완전 수정됨)
+        # 할당 로직
         with st.spinner('실시간 재고 차감 및 박스 단위 최적화 중...'):
             for i, row in df_order.iterrows():
                 mecode = row['MECODE']
@@ -57,7 +69,6 @@ if uploaded_file:
                     df_order.at[i, '할당상태'] = "제외"
                     continue
                     
-                # 해당 상품의 남은 재고 리스트 전체
                 available_inv = inv_grouped[(inv_grouped['상품'] == mecode) & (inv_grouped['환산'] > 0)]
                 
                 if available_inv.empty:
@@ -66,15 +77,11 @@ if uploaded_file:
                     df_order.at[i, '할당상태'] = '재고없음'
                     continue
 
-                # 💡 [진짜 해결책] 1순위: 발주 수량을 100% 만족하는 로트들만 먼저 뽑아낸다.
                 full_match_inv = available_inv[available_inv['환산'] >= order_qty]
 
                 if not full_match_inv.empty:
-                    # 만족하는 놈들 중에서 제일 유통기한 빠른 걸 고른다!
                     best_match = full_match_inv.sort_values(by='유효일자_보존').iloc[0]
                 else:
-                    # 2순위 (예외 상황): 단일 로트로는 100% 충족이 불가능할 때만 
-                    # 어쩔 수 없이 남은 것 중 제일 오래된 걸 긁어와서 부분 할당(BOX) 처리한다.
                     best_match = available_inv.sort_values(by='유효일자_보존').iloc[0]
 
                 best_idx = best_match.name
@@ -135,7 +142,7 @@ if uploaded_file:
         st.download_button(
             label="작업 완료 엑셀 다운로드 📥",
             data=buffer.getvalue(),
-            file_name="수주업로드_수량조건최우선.xlsx",
+            file_name="수주업로드_열정제완료.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
