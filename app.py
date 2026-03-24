@@ -18,14 +18,14 @@ with st.sidebar:
     uploaded_file = st.file_uploader("올리브영 발주 엑셀 업로드", type=['xlsx'])
     
     st.markdown("---")
-    st.caption("💡 100% 부분할당 및 입수량 뻥튀기 방어 적용됨")
-    st.caption("Developed by SCM Team")
+    st.caption("💡 자동 부분 할당 및 재고 차감 적용")
+    st.caption("Developed by Jay")
 
 # ==========================================
 # 메인 화면 디자인
 # ==========================================
 st.title("올리브영 수주업로드 자동 입력 시스템")
-st.markdown("Moving The Heart")
+st.markdown("Mentholatum : Moving The Heart")
 
 # 파일이 업로드 되었을 때만 아래 로직 실행
 if uploaded_file:
