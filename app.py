@@ -4,14 +4,14 @@ import io
 import re
 
 # 1. 페이지 기본 설정 (가장 위에 와야 함)
-st.set_page_config(page_title="FEFO 자동 할당 시스템", page_icon="📦", layout="wide")
+st.set_page_config(page_title="올리브영 수주업로드 자동 입력 시스템", page_icon="🌿", layout="wide")
 
 # ==========================================
 # 🎨 사이드바 (Sidebar) 디자인: 로고 및 업로드 창
 # ==========================================
 with st.sidebar:
     # 인터넷에 있는 멘소래담 로고 이미지 주소 (바로 렌더링됨)
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Mentholatum_logo.svg/512px-Mentholatum_logo.svg.png", use_container_width=True)
+    st.image("https://static.wikia.nocookie.net/mycompanies/images/d/de/Fe328a0f-a347-42a0-bd70-254853f35374.jpg/revision/latest?cb=20191117172510", use_container_width=True)
     
     st.markdown("---")
     st.header("⚙️ 작업 설정")
