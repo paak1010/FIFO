@@ -3,14 +3,34 @@ import pandas as pd
 import io
 import re
 
-st.set_page_config(layout="wide")
-st.title("📦 선입선출(FEFO) 자동 할당 시스템 (입수량 뻥튀기 완벽 방어)")
+# 1. 페이지 기본 설정 (가장 위에 와야 함)
+st.set_page_config(page_title="FEFO 자동 할당 시스템", page_icon="📦", layout="wide")
 
-uploaded_file = st.file_uploader("작업할 엑셀 파일을 업로드하세요", type=['xlsx'])
+# ==========================================
+# 🎨 사이드바 (Sidebar) 디자인: 로고 및 업로드 창
+# ==========================================
+with st.sidebar:
+    # 인터넷에 있는 멘소래담 로고 이미지 주소 (바로 렌더링됨)
+    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Mentholatum_logo.svg/512px-Mentholatum_logo.svg.png", use_container_width=True)
+    
+    st.markdown("---")
+    st.header("⚙️ 작업 설정")
+    uploaded_file = st.file_uploader("올리브영 발주 엑셀 업로드", type=['xlsx'])
+    
+    st.markdown("---")
+    st.caption("💡 100% 부분할당 및 입수량 뻥튀기 방어 적용됨")
+    st.caption("Developed by SCM Team")
 
+# ==========================================
+# 메인 화면 디자인
+# ==========================================
+st.title("📦 올리브영 FEFO 자동 할당 시스템")
+st.markdown("매일 반복되는 VLOOKUP과 수량 계산을 원클릭으로 해결하세요.")
+
+# 파일이 업로드 되었을 때만 아래 로직 실행
 if uploaded_file:
     try:
-        # 1. 데이터 불러오기
+        # 데이터 불러오기
         df_order = pd.read_excel(uploaded_file, sheet_name='서식(수주업로드)', header=1)
         df_inv = pd.read_excel(uploaded_file, sheet_name='재고', header=2)
 
@@ -36,17 +56,14 @@ if uploaded_file:
         box_col_candidates = [col for col in df_inv.columns if 'BOX' in col.upper() or '입수량' in col]
         box_col_name = box_col_candidates[0] if box_col_candidates else None
 
-        # 💡 [핵심 방어] 상품별 '진짜' 1박스 입수량 찾기 (피벗테이블 합산 오류 무시)
+        # 상품별 '진짜' 1박스 입수량 찾기
         product_box_unit = {}
         if box_col_name:
             for mecode, group in df_inv.groupby('상품'):
-                # 숫자만 남기기 (소수점 포함)
                 box_vals_clean = group[box_col_name].astype(str).str.replace(r'[^\d.]', '', regex=True)
-                # 빈 문자열 처리 및 숫자로 변환
                 box_vals = pd.to_numeric(box_vals_clean, errors='coerce').dropna()
                 box_vals = box_vals[box_vals > 0]
                 if not box_vals.empty:
-                    # 뻥튀기된 값들 중 가장 작은 값을 진짜 입수량으로 확정!
                     product_box_unit[mecode] = int(box_vals.min())
 
         # 불량 재고 걸러내기
@@ -68,7 +85,7 @@ if uploaded_file:
         df_order['부족시_유효일자'] = ''
 
         # 할당 로직
-        with st.spinner('실시간 재고 차감 및 박스 단위 최적화 중...'):
+        with st.spinner('실시간 재고 차감 및 최적화 중... 🚀'):
             for i, row in df_order.iterrows():
                 mecode = row['MECODE']
                 order_qty = row['수량']
@@ -97,7 +114,6 @@ if uploaded_file:
                 lot_str = best_match['화주LOT']
                 date_str = best_match['유효일자'].strftime('%Y-%m-%d') if pd.notna(best_match['유효일자']) else '일자없음'
                 
-                # 💥 뻥튀기된 박스 단위 대신, 아까 미리 찾아둔 '진짜' 입수량 가져오기
                 box_unit = product_box_unit.get(mecode, 1)
                     
                 if max_qty >= order_qty:
@@ -133,20 +149,25 @@ if uploaded_file:
                 df_order['발주원가'] = pd.to_numeric(df_order['발주원가'], errors='coerce').fillna(0)
                 df_order['발주금액'] = df_order['수량'] * df_order['발주원가']
 
-        # 결과 확인
-        st.subheader("✅ 할당 완료 결과 미리보기")
+        # 성공 메시지
+        st.success("✅ 모든 데이터 매핑 및 수량 할당이 완료되었습니다!")
+
+        # 결과 확인 및 다운로드 영역
+        st.subheader("📊 작업 결과 미리보기")
         preview_cols = ['MECODE', '상품명', '수량', 'LOT', '유효일자', '할당상태', '부족시_최대가능수량']
-        st.dataframe(df_order[[c for c in preview_cols if c in df_order.columns]].head(15))
+        st.dataframe(df_order[[c for c in preview_cols if c in df_order.columns]].head(15), use_container_width=True)
 
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             df_order.to_excel(writer, index=False, sheet_name='서식(수주업로드)')
             
+        # 다운로드 버튼을 큼직하게 강조
         st.download_button(
-            label="작업 완료 엑셀 다운로드 📥",
+            label="💾 최종 완성 엑셀 파일 다운로드",
             data=buffer.getvalue(),
-            file_name="수주업로드_입수량해결.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            file_name="올리브영_수주업로드_자동할당완료.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary" # 버튼을 파란색으로 눈에 띄게!
         )
 
     except Exception as e:
