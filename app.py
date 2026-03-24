@@ -4,7 +4,7 @@ import io
 import re
 
 st.set_page_config(layout="wide")
-st.title("📦 선입선출(FEFO) 자동 할당 시스템 (수량 우선 매칭)")
+st.title("📦 선입선출(FEFO) 자동 할당 시스템 (박스 입수량 버그 픽스)")
 
 uploaded_file = st.file_uploader("작업할 엑셀 파일을 업로드하세요", type=['xlsx'])
 
@@ -14,14 +14,12 @@ if uploaded_file:
         df_order = pd.read_excel(uploaded_file, sheet_name='서식(수주업로드)', header=1)
         df_inv = pd.read_excel(uploaded_file, sheet_name='재고', header=2)
 
-        # 💡 [새로 추가된 로직] '잔여일수'부터 맨 끝 열까지 싹둑 자르기
+        # 💡 불필요한 열 날리기 ('잔여일수' 이후 싹둑)
         if '잔여일수' in df_order.columns:
-            # '잔여일수' 열의 위치(인덱스)를 찾아서 그 뒤로는 전부 삭제
             start_idx = list(df_order.columns).index('잔여일수')
             cols_to_drop = df_order.columns[start_idx:]
             df_order = df_order.drop(columns=cols_to_drop)
 
-        # LOT와 유효일자 열이 날아갔을 경우를 대비해 빈 열 생성
         if 'LOT' not in df_order.columns: df_order['LOT'] = ''
         if '유효일자' not in df_order.columns: df_order['유효일자'] = ''
 
@@ -53,7 +51,6 @@ if uploaded_file:
         else:
             inv_grouped = pd.DataFrame(columns=['상품', '유효일자_보존', '환산', '화주LOT', '유효일자'] + ([box_col_name] if box_col_name else []))
 
-        # 잘려나간 자리에 우리가 만든 결과용 열 깔끔하게 추가
         df_order['할당상태'] = ''
         df_order['부족시_최대가능수량'] = None
         df_order['부족시_LOT'] = ''
@@ -90,9 +87,17 @@ if uploaded_file:
                 lot_str = best_match['화주LOT']
                 date_str = best_match['유효일자'].strftime('%Y-%m-%d') if pd.notna(best_match['유효일자']) else '일자없음'
                 
+                # 💥 [원인 해결!] 200.0 이 2000이 되는 대참사 방지 (소수점은 살려두기)
                 try:
                     box_val = str(best_match[box_col_name])
-                    box_unit = int(re.sub(r'[^\d]', '', box_val))
+                    # 숫자(\d)와 소수점(.)만 남기고 다 지움
+                    box_clean = re.sub(r'[^\d.]', '', box_val)
+                    if box_clean == '':
+                        box_unit = 1
+                    else:
+                        # 소수점 반영 후 정수형으로 변환 (200.0 -> 200)
+                        box_unit = int(float(box_clean))
+                    
                     if box_unit <= 0: box_unit = 1
                 except:
                     box_unit = 1
@@ -142,7 +147,7 @@ if uploaded_file:
         st.download_button(
             label="작업 완료 엑셀 다운로드 📥",
             data=buffer.getvalue(),
-            file_name="수주업로드_열정제완료.xlsx",
+            file_name="수주업로드_완벽할당_최종.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
