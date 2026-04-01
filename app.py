@@ -30,8 +30,7 @@ def to_safe_float(series):
 
 if uploaded_file:
     try:
-        # [수정 포인트 1] dtype=str 대신 기본으로 읽은 후 바로 모든 컬럼을 문자열로 변환
-        # 이렇게 해야 '12.0' 같은 숫자가 들어와도 충돌 없이 문자로 바뀝니다.
+        # 데이터 읽기 및 문자열 강제 변환 (에러 방지)
         df_order_raw = pd.read_excel(uploaded_file, sheet_name='서식(수주업로드)', header=1)
         df_inv_raw = pd.read_excel(uploaded_file, sheet_name='재고', header=2)
         
@@ -48,15 +47,13 @@ if uploaded_file:
         for col in ['LOT', '유효일자', '할당상태', '부족시_최대가능수량', '부족시_LOT', '부족시_유효일자']:
             df_order[col] = ""
 
-        # 🛠️ 데이터 정제
+        # 데이터 정제
         df_order['MECODE'] = df_order['MECODE'].str.strip().str.upper()
         df_inv['상품'] = df_inv['상품'].str.strip().str.upper()
-        
-        # 계산에 필요한 값만 다시 숫자로 변환
         df_order['수량'] = to_safe_float(df_order['수량'])
         df_inv['환산'] = to_safe_float(df_inv['환산'])
         
-        # 유효일자 처리
+        # 유효일자 처리 (시간 제거)
         df_inv['유효일자_DT'] = pd.to_datetime(df_inv['유효일자'], errors='coerce')
         df_inv['유효일자_보존'] = df_inv['유효일자_DT'].fillna(pd.Timestamp('2099-12-31'))
         df_inv['유효일자_STR'] = df_inv['유효일자_DT'].dt.strftime('%Y-%m-%d').fillna('')
@@ -80,7 +77,6 @@ if uploaded_file:
         # [재고 그룹핑]
         if not df_inv_valid.empty:
             df_inv_sorted = df_inv_valid.sort_values(by=['상품', '유효일자_보존', '환산'], ascending=[True, True, False])
-            # groupby 기준열 외의 필요한 값만 agg
             inv_grouped = df_inv_sorted.groupby(['상품', '유효일자_보존']).agg({
                 '환산': 'sum', 
                 '화주LOT': 'first', 
@@ -130,7 +126,21 @@ if uploaded_file:
                     df_order.at[i, '부족시_LOT'] = lot_str
                     df_order.at[i, '부족시_유효일자'] = date_str
 
-        # 💾 엑셀 출력 (서식 고정)
+        # ==========================================
+        # 📊 화면 표시용 미리보기 (핵심 수정!)
+        # ==========================================
+        st.success("✅ 처리가 완료되었습니다!")
+        
+        st.subheader("📊 작업 결과 미리보기 (상위 100건)")
+        # 화면에 보여줄 주요 컬럼만 선택
+        view_cols = ['MECODE', '상품명', '수량', 'LOT', '유효일자', '할당상태']
+        # 혹시 컬럼명이 다를 수도 있으니 존재하는 컬럼만 필터링
+        existing_view_cols = [c for c in view_cols if c in df_order.columns]
+        
+        # 데이터프레임 출력 (인덱스 없이, 깔끔하게)
+        st.dataframe(df_order[existing_view_cols].head(100), use_container_width=True, hide_index=True)
+
+        # 💾 엑셀 다운로드 파일 생성
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             df_order.to_excel(writer, index=False, sheet_name='서식(수주업로드)')
@@ -138,14 +148,12 @@ if uploaded_file:
             worksheet = writer.sheets['서식(수주업로드)']
             text_format = workbook.add_format({'num_format': '@'}) 
             
-            # 유효일자 열들을 텍스트 서식으로 고정 (시간 표시 방지)
             for target_col in ['유효일자', '부족시_유효일자']:
                 if target_col in df_order.columns:
                     idx = df_order.columns.get_loc(target_col)
                     worksheet.set_column(idx, idx, 15, text_format)
 
-        st.success("✅ 처리가 완료되었습니다!")
-        st.download_button(label="💾 최종 엑셀 다운로드", data=buffer.getvalue(), file_name="올리브영_자동할당완료.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+        st.download_button(label="💾 최종 완성본 엑셀 다운로드", data=buffer.getvalue(), file_name="올리브영_자동할당완료.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
 
     except Exception as e:
         st.error(f"오류 발생: {e}")
