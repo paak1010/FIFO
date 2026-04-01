@@ -50,11 +50,11 @@ if uploaded_file:
         df_order['수량'] = to_safe_float(df_order['수량'])
         df_inv['환산'] = to_safe_float(df_inv['환산'])
         
-        # 유효일자 처리 (정렬 및 계산용)
+        # 유효일자 처리 (정렬용)
         df_inv['유효일자_DT'] = pd.to_datetime(df_inv['유효일자'], errors='coerce')
         df_inv['유효일자_보존'] = df_inv['유효일자_DT'].fillna(pd.Timestamp('2099-12-31'))
-        # 출력용 (시간 제거 문자열)
-        df_inv['유효일자_STR'] = df_inv['유효일자_DT'].dt.strftime('%Y-%m-%d').fillna('일자없음')
+        # 출력용 (시간을 완전히 제거한 YYYY-MM-DD 문자열)
+        df_inv['유효일자_STR'] = df_inv['유효일자_DT'].dt.strftime('%Y-%m-%d').fillna('')
 
         # [박스 입수량 계산]
         box_col_candidates = [col for col in df_inv.columns if 'BOX' in col.upper() or '입수량' in col]
@@ -72,10 +72,11 @@ if uploaded_file:
         idx_oc2 = (df_inv['상품'] == 'ME90621OC2') & (~df_inv['화주LOT'].fillna('').str.contains('분리배출'))
         df_inv_valid = df_inv[~(idx_pmm | idx_oc2)].copy()
 
-        # [재고 그룹핑]
+        # [재고 그룹핑] - 에러 수정 포인트
         if not df_inv_valid.empty:
             df_inv_sorted = df_inv_valid.sort_values(by=['상품', '유효일자_보존', '환산'], ascending=[True, True, False])
-            agg_dict = {'환산': 'sum', '화주LOT': 'first', '유효일자_STR': 'first', '유효일자_보존': 'first'}
+            # agg_dict에서 '유효일자_보존' 제거 (groupby 기준열이므로 자동 포함됨)
+            agg_dict = {'환산': 'sum', '화주LOT': 'first', '유효일자_STR': 'first'}
             inv_grouped = df_inv_sorted.groupby(['상품', '유효일자_보존']).agg(agg_dict).reset_index()
         else:
             inv_grouped = pd.DataFrame(columns=['상품', '유효일자_보존', '환산', '화주LOT', '유효일자_STR'])
@@ -102,7 +103,7 @@ if uploaded_file:
                 best_idx = best_match.name
                 max_qty = best_match['환산']
                 lot_str = best_match['화주LOT']
-                date_str = best_match['유효일자_STR'] # 여기서 이미 YYYY-MM-DD 문자열임
+                date_str = best_match['유효일자_STR'] 
                 
                 box_unit = product_box_unit.get(mecode, 1)
                 potential_qty = min(order_qty, max_qty)
@@ -125,30 +126,31 @@ if uploaded_file:
                 df_order['발주원가'] = to_safe_float(df_order['발주원가'])
                 df_order['발주금액'] = df_order['수량'] * df_order['발주원가']
 
-        st.success("✅ 처리가 완료되었습니다!")
-        
-        # 엑셀 다운로드 (서식 강제 지정 버전)
+        # 💾 엑셀 출력 (시간 제거 및 서식 고정)
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            # 엑셀에 쓰기 전에 유효일자 열들을 명시적으로 문자열로 한 번 더 변환 (가장 확실함)
+            df_order['유효일자'] = df_order['유효일자'].astype(str)
+            df_order['부족시_유효일자'] = df_order['부족시_유효일자'].astype(str)
+            
             df_order.to_excel(writer, index=False, sheet_name='서식(수주업로드)')
             
-            # 워크시트 객체 가져오기
             workbook = writer.book
             worksheet = writer.sheets['서식(수주업로드)']
             
-            # 날짜 서식 정의 (시간 없이 날짜만)
-            date_format = workbook.add_format({'num_format': 'yyyy-mm-dd'})
+            # 날짜 서식 (텍스트로 인식되게 하여 시간 자동 생성을 방지)
+            text_format = workbook.add_format({'num_format': '@'}) 
             
-            # '유효일자' 열 위치 찾기 (0부터 시작)
+            # 유효일자 컬럼 위치 찾아서 텍스트 서식 적용
             if '유효일자' in df_order.columns:
                 col_idx = df_order.columns.get_loc('유효일자')
-                # 해당 열 전체에 서식 적용 (데이터가 있는 범위까지)
-                worksheet.set_column(col_idx, col_idx, 15, date_format)
+                worksheet.set_column(col_idx, col_idx, 15, text_format)
             
             if '부족시_유효일자' in df_order.columns:
                 col_idx_sub = df_order.columns.get_loc('부족시_유효일자')
-                worksheet.set_column(col_idx_sub, col_idx_sub, 15, date_format)
+                worksheet.set_column(col_idx_sub, col_idx_sub, 15, text_format)
 
+        st.success("✅ 처리가 완료되었습니다!")
         st.download_button(
             label="💾 최종 엑셀 다운로드", 
             data=buffer.getvalue(), 
