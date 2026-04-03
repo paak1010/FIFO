@@ -15,7 +15,7 @@ with st.sidebar:
     uploaded_file = st.file_uploader("올리브영 발주 엑셀 업로드", type=['xlsx'])
     st.markdown("---")
     st.caption("💡 자동 부분 할당 및 재고 차감 적용")
-    st.caption("✔️ 잔여 유효일자 1.5년(18개월) 이하 제외")
+    st.caption("✔️ 잔여 유효일자 548일 이하 제외")
     st.caption("Developed by Jay")
 
 # ==========================================
@@ -73,11 +73,11 @@ if uploaded_file:
                     product_box_unit[mecode] = int(box_vals.min())
 
         # ==========================================
-        # 🔥 [추가된 로직] 재고 필터링 조건 강화
+        # 🔥 [정확한 일수 적용] 재고 필터링 조건 강화
         # ==========================================
-        # 1. 잔여 유효일자 1년 반(18개월) 이하 필터링
+        # 1. 잔여 유효일자 정확히 548일 이하 필터링
         today = pd.Timestamp.today().normalize()
-        cutoff_date = today + pd.DateOffset(months=18)
+        cutoff_date = today + pd.Timedelta(days=548)
         idx_short_shelf_life = (df_inv['유효일자_보존'] <= cutoff_date)
 
         # 2. 특정 불량/조건부 재고 필터링
@@ -98,7 +98,7 @@ if uploaded_file:
         else:
             inv_grouped = pd.DataFrame(columns=['상품', '유효일자_보존', '환산', '화주LOT', '유효일자_STR'])
 
-        # 🚀 할당 로직 (수량 계산 완벽 복구 적용)
+        # 🚀 할당 로직
         with st.spinner('재고 매칭 중...'):
             for i, row in df_order.iterrows():
                 mecode = str(row['MECODE'])
@@ -140,7 +140,7 @@ if uploaded_file:
                     df_order.at[i, '부족시_유효일자'] = date_str
 
         # ==========================================
-        # 📊 화면 표시용 미리보기 (에러 방어 코드 적용)
+        # 📊 화면 표시용 미리보기
         # ==========================================
         st.success("✅ 처리가 완료되었습니다!")
         
@@ -157,7 +157,7 @@ if uploaded_file:
         st.dataframe(df_safe_display, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # 💾 엑셀 다운로드 
+        # 💾 엑셀 다운로드
         # ==========================================
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
