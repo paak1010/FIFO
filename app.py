@@ -5,9 +5,7 @@ import io
 # 1. 페이지 기본 설정
 st.set_page_config(page_title="올리브영 수주업로드 자동 입력 시스템", page_icon="🌿", layout="wide")
 
-# ==========================================
-# 🎨 사이드바 디자인
-# ==========================================
+# 사이드바 디자인
 with st.sidebar:
     st.image("https://static.wikia.nocookie.net/mycompanies/images/d/de/Fe328a0f-a347-42a0-bd70-254853f35374.jpg/revision/latest?cb=20191117172510", use_container_width=True)
     st.markdown("---")
@@ -17,25 +15,24 @@ with st.sidebar:
     st.caption("💡 자동 부분 할당 및 재고 차감 적용")
     st.caption("Developed by Jay")
 
-# ==========================================
-# 메인 화면 디자인
-# ==========================================
 st.title("올리브영 수주업로드 자동 입력 시스템")
 st.markdown("Mentholatum : Moving The Heart")
 
 def to_safe_float(series):
     """어떤 타입이 들어와도 숫자만 추출하여 float로 변환"""
-    cleaned = series.astype(str).str.replace(r'[^0-9.]', '', regex=True)
+    # 이미 숫자형인 경우를 대비해 astype(str) 처리 전 결측치 제거
+    cleaned = series.fillna(0).astype(str).str.replace(r'[^0-9.]', '', regex=True)
     return pd.to_numeric(cleaned, errors='coerce').fillna(0)
 
 if uploaded_file:
     try:
-        # 데이터 읽기 및 문자열 강제 변환 (에러 방지)
+        # 1. 데이터 읽기 (dtype=str 옵션을 제거하고 읽은 후 필요 부분만 변환하는 것이 안전합니다)
         df_order_raw = pd.read_excel(uploaded_file, sheet_name='서식(수주업로드)', header=1)
         df_inv_raw = pd.read_excel(uploaded_file, sheet_name='재고', header=2)
         
-        df_order = df_order_raw.fillna('').astype(str)
-        df_inv = df_inv_raw.fillna('').astype(str)
+        # 전체를 문자열로 바꾸기보다, 필요한 컬럼만 정제
+        df_order = df_order_raw.copy()
+        df_inv = df_inv_raw.copy()
 
         # 불필요한 열 제거
         if '잔여일수' in df_order.columns:
@@ -43,17 +40,18 @@ if uploaded_file:
             cols_to_drop = df_order.columns[start_idx:]
             df_order = df_order.drop(columns=cols_to_drop)
 
-        # 결과 컬럼 초기화
+        # 결과 컬럼 초기화 (None이나 빈 문자열로 통일)
         for col in ['LOT', '유효일자', '할당상태', '부족시_최대가능수량', '부족시_LOT', '부족시_유효일자']:
             df_order[col] = ""
 
-        # 데이터 정제
-        df_order['MECODE'] = df_order['MECODE'].str.strip().str.upper()
-        df_inv['상품'] = df_inv['상품'].str.strip().str.upper()
+        # 데이터 정제 (MECODE는 문자열로, 수량은 숫자로)
+        df_order['MECODE'] = df_order['MECODE'].astype(str).str.strip().str.upper()
+        df_inv['상품'] = df_inv['상품'].astype(str).str.strip().str.upper()
+        
         df_order['수량'] = to_safe_float(df_order['수량'])
         df_inv['환산'] = to_safe_float(df_inv['환산'])
         
-        # 유효일자 처리 (시간 제거)
+        # 유효일자 처리
         df_inv['유효일자_DT'] = pd.to_datetime(df_inv['유효일자'], errors='coerce')
         df_inv['유효일자_보존'] = df_inv['유효일자_DT'].fillna(pd.Timestamp('2099-12-31'))
         df_inv['유효일자_STR'] = df_inv['유효일자_DT'].dt.strftime('%Y-%m-%d').fillna('')
@@ -71,7 +69,7 @@ if uploaded_file:
 
         # [불량 재고 필터링]
         idx_pmm = (df_inv['상품'] == 'ME00621PMM') & (df_inv['유효일자_DT'].dt.year != 2028)
-        idx_oc2 = (df_inv['상품'] == 'ME90621OC2') & (~df_inv['화주LOT'].str.contains('분리배출'))
+        idx_oc2 = (df_inv['상품'] == 'ME90621OC2') & (df_inv['화주LOT'].astype(str).str.contains('분리배출'))
         df_inv_valid = df_inv[~(idx_pmm | idx_oc2)].copy()
 
         # [재고 그룹핑]
@@ -91,7 +89,7 @@ if uploaded_file:
                 mecode = row['MECODE']
                 order_qty = row['수량']
                 
-                if not mecode or mecode == '' or order_qty <= 0:
+                if not mecode or mecode == 'NAN' or order_qty <= 0:
                     df_order.at[i, '할당상태'] = "제외"
                     continue
                     
@@ -106,8 +104,8 @@ if uploaded_file:
 
                 best_idx = best_match.name
                 max_qty = best_match['환산']
-                lot_str = best_match['화주LOT']
-                date_str = best_match['유효일자_STR'] 
+                lot_str = str(best_match['화주LOT'])
+                date_str = str(best_match['유효일자_STR'])
                 
                 box_unit = product_box_unit.get(mecode, 1)
                 potential_qty = min(order_qty, max_qty)
@@ -126,34 +124,23 @@ if uploaded_file:
                     df_order.at[i, '부족시_LOT'] = lot_str
                     df_order.at[i, '부족시_유효일자'] = date_str
 
-        # ==========================================
-        # 📊 화면 표시용 미리보기 (핵심 수정!)
-        # ==========================================
+        # 표시용 데이터프레임 변환 (오류 방지를 위해 모두 문자열로 변환하여 출력)
         st.success("✅ 처리가 완료되었습니다!")
-        
         st.subheader("📊 작업 결과 미리보기 (상위 100건)")
-        # 화면에 보여줄 주요 컬럼만 선택
+        
         view_cols = ['MECODE', '상품명', '수량', 'LOT', '유효일자', '할당상태']
-        # 혹시 컬럼명이 다를 수도 있으니 존재하는 컬럼만 필터링
         existing_view_cols = [c for c in view_cols if c in df_order.columns]
         
-        # 데이터프레임 출력 (인덱스 없이, 깔끔하게)
-        st.dataframe(df_order[existing_view_cols].head(100), use_container_width=True, hide_index=True)
+        # .astype(str)을 통해 스트림릿 출력 오류 원천 차단
+        st.dataframe(df_order[existing_view_cols].head(100).astype(str), use_container_width=True, hide_index=True)
 
-        # 💾 엑셀 다운로드 파일 생성
+        # 엑셀 다운로드
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             df_order.to_excel(writer, index=False, sheet_name='서식(수주업로드)')
-            workbook = writer.book
-            worksheet = writer.sheets['서식(수주업로드)']
-            text_format = workbook.add_format({'num_format': '@'}) 
             
-            for target_col in ['유효일자', '부족시_유효일자']:
-                if target_col in df_order.columns:
-                    idx = df_order.columns.get_loc(target_col)
-                    worksheet.set_column(idx, idx, 15, text_format)
-
         st.download_button(label="💾 최종 완성본 엑셀 다운로드", data=buffer.getvalue(), file_name="올리브영_자동할당완료.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
 
     except Exception as e:
         st.error(f"오류 발생: {e}")
+        st.info("💡 팁: 엑셀 파일의 '서식(수주업로드)' 시트와 '재고' 시트의 컬럼명이 정확한지 확인해주세요.")
