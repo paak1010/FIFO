@@ -6,7 +6,7 @@ import io
 st.set_page_config(page_title="올리브영 수주업로드 자동 입력 시스템", page_icon="🌿", layout="wide")
 
 # ==========================================
-# 🎨 사이드바 디자인 (원래대로 복구 완료!)
+# 🎨 사이드바 디자인
 # ==========================================
 with st.sidebar:
     st.image("https://static.wikia.nocookie.net/mycompanies/images/d/de/Fe328a0f-a347-42a0-bd70-254853f35374.jpg/revision/latest?cb=20191117172510", use_container_width=True)
@@ -15,6 +15,7 @@ with st.sidebar:
     uploaded_file = st.file_uploader("올리브영 발주 엑셀 업로드", type=['xlsx'])
     st.markdown("---")
     st.caption("💡 자동 부분 할당 및 재고 차감 적용")
+    st.caption("✔️ 잔여 유효일자 1.5년(18개월) 이하 제외")
     st.caption("Developed by Jay")
 
 # ==========================================
@@ -71,10 +72,20 @@ if uploaded_file:
                 if not box_vals.empty:
                     product_box_unit[mecode] = int(box_vals.min())
 
-        # [불량 재고 필터링]
+        # ==========================================
+        # 🔥 [추가된 로직] 재고 필터링 조건 강화
+        # ==========================================
+        # 1. 잔여 유효일자 1년 반(18개월) 이하 필터링
+        today = pd.Timestamp.today().normalize()
+        cutoff_date = today + pd.DateOffset(months=18)
+        idx_short_shelf_life = (df_inv['유효일자_보존'] <= cutoff_date)
+
+        # 2. 특정 불량/조건부 재고 필터링
         idx_pmm = (df_inv['상품'] == 'ME00621PMM') & (df_inv['유효일자_DT'].dt.year != 2028)
         idx_oc2 = (df_inv['상품'] == 'ME90621OC2') & (~df_inv['화주LOT'].astype(str).str.contains('분리배출'))
-        df_inv_valid = df_inv[~(idx_pmm | idx_oc2)].copy()
+        
+        # 3. 위 조건들에 해당하는 재고는 모두 제외하고 유효한 재고만 남김
+        df_inv_valid = df_inv[~(idx_pmm | idx_oc2 | idx_short_shelf_life)].copy()
 
         # [재고 그룹핑]
         df_inv_valid['화주LOT'] = df_inv_valid['화주LOT'].astype(str)
@@ -87,7 +98,7 @@ if uploaded_file:
         else:
             inv_grouped = pd.DataFrame(columns=['상품', '유효일자_보존', '환산', '화주LOT', '유효일자_STR'])
 
-        # 🚀 할당 로직 (수량 계산 완벽 복구)
+        # 🚀 할당 로직 (수량 계산 완벽 복구 적용)
         with st.spinner('재고 매칭 중...'):
             for i, row in df_order.iterrows():
                 mecode = str(row['MECODE'])
@@ -137,7 +148,6 @@ if uploaded_file:
         view_cols = ['MECODE', '상품명', '수량', 'LOT', '유효일자', '할당상태']
         existing_view_cols = [c for c in view_cols if c in df_order.columns]
         
-        # [핵심] 16.0 에러 원천 차단
         df_display = df_order[existing_view_cols].head(100).copy()
         df_safe_display = pd.DataFrame(
             df_display.to_numpy().astype(str), 
@@ -147,7 +157,7 @@ if uploaded_file:
         st.dataframe(df_safe_display, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # 💾 엑셀 다운로드 (원래 포맷팅 방식 복구)
+        # 💾 엑셀 다운로드 
         # ==========================================
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
