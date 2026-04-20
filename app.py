@@ -84,7 +84,7 @@ if uploaded_file:
         idx_oc2 = (df_inv['상품'] == 'ME90621OC2') & (~df_inv['화주LOT'].astype(str).str.contains('분리배출'))
         
         # 3. 위 조건들에 해당하는 재고는 모두 제외하고 유효한 재고만 남김
-        df_inv_valid = df_inv[~(idx_pmm | idx_oc2 | idx_short_shelf_life)].copy()
+        df_inv_valid = df_inv[~(idx_oc2 | idx_short_shelf_life)].copy()
 
         # [재고 그룹핑]
         df_inv_valid['화주LOT'] = df_inv_valid['화주LOT'].astype(str)
