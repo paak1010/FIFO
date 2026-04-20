@@ -81,7 +81,6 @@ if uploaded_file:
         idx_short_shelf_life = (df_inv['유효일자_보존'] <= cutoff_date)
 
         # 2. 특정 불량/조건부 재고 필터링
-        idx_pmm = (df_inv['상품'] == 'ME00621PMM') & (df_inv['유효일자_DT'].dt.year != 2028)
         idx_oc2 = (df_inv['상품'] == 'ME90621OC2') & (~df_inv['화주LOT'].astype(str).str.contains('분리배출'))
         
         # 3. 위 조건들에 해당하는 재고는 모두 제외하고 유효한 재고만 남김
