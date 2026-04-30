@@ -38,6 +38,25 @@ if uploaded_file:
         df_order = df_order_raw.copy()
         df_inv = df_inv_raw.copy()
 
+        # ==========================================
+        # 🛡️ [재고 시트] 열 순서 및 이름 변경 방어 코드 (Robust 매칭)
+        # ==========================================
+        # 엑셀에서 열 순서를 바꾸거나 이름이 조금 달라져도 키워드로 찾아내서 내부적으로 통일시킵니다.
+        rename_dict = {}
+        for col in df_inv.columns:
+            col_str = str(col).replace(" ", "").upper()
+            if '상품' in col_str and '상품명' not in col_str:
+                rename_dict[col] = '상품'
+            elif 'LOT' in col_str:
+                rename_dict[col] = '화주LOT'
+            elif '유효일자' in col_str or '유통기한' in col_str:
+                rename_dict[col] = '유효일자'
+            elif '환산' in col_str:
+                rename_dict[col] = '환산'
+        
+        df_inv.rename(columns=rename_dict, inplace=True)
+        # ==========================================
+
         # 불필요한 열 제거
         if '잔여일수' in df_order.columns:
             start_idx = list(df_order.columns).index('잔여일수')
@@ -50,7 +69,7 @@ if uploaded_file:
             df_order[col] = ""
             df_order[col] = df_order[col].astype(object)
 
-        # 데이터 정제
+        # 데이터 정제 (매핑된 컬럼명을 안전하게 호출)
         df_order['MECODE'] = df_order['MECODE'].astype(str).str.strip().str.upper()
         df_inv['상품'] = df_inv['상품'].astype(str).str.strip().str.upper()
         df_order['수량'] = to_safe_float(df_order['수량']).astype(float)
@@ -61,8 +80,8 @@ if uploaded_file:
         df_inv['유효일자_보존'] = df_inv['유효일자_DT'].fillna(pd.Timestamp('2099-12-31'))
         df_inv['유효일자_STR'] = df_inv['유효일자_DT'].dt.strftime('%Y-%m-%d').fillna('')
 
-        # [박스 입수량 계산]
-        box_col_candidates = [col for col in df_inv.columns if 'BOX' in col.upper() or '입수량' in col]
+        # [박스 입수량 계산] 열 이름에 'BOX'나 '입수량'이 들어간 아무 열이나 동적으로 찾음
+        box_col_candidates = [col for col in df_inv.columns if 'BOX' in str(col).upper() or '입수량' in str(col)]
         box_col_name = box_col_candidates[0] if box_col_candidates else None
         product_box_unit = {}
         if box_col_name:
@@ -75,15 +94,12 @@ if uploaded_file:
         # ==========================================
         # 🔥 [정확한 일수 적용] 재고 필터링 조건 강화
         # ==========================================
-        # 1. 잔여 유효일자 정확히 548일 이하 필터링
         today = pd.Timestamp.today().normalize()
         cutoff_date = today + pd.Timedelta(days=548)
         idx_short_shelf_life = (df_inv['유효일자_보존'] <= cutoff_date)
 
-        # 2. 특정 불량/조건부 재고 필터링
         idx_oc2 = (df_inv['상품'] == 'ME90621OC2') & (~df_inv['화주LOT'].astype(str).str.contains('분리배출'))
         
-        # 3. 위 조건들에 해당하는 재고는 모두 제외하고 유효한 재고만 남김
         df_inv_valid = df_inv[~(idx_oc2 | idx_short_shelf_life)].copy()
 
         # [재고 그룹핑]
