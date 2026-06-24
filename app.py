@@ -45,7 +45,9 @@ if uploaded_file:
         rename_dict = {}
         for col in df_inv.columns:
             col_str = str(col).replace(" ", "").upper()
-            if '상품' in col_str and '상품명' not in col_str:
+            if '상품명' in col_str:
+                rename_dict[col] = '상품명'
+            elif '상품' in col_str:
                 rename_dict[col] = '상품'
             elif 'LOT' in col_str:
                 rename_dict[col] = '화주LOT'
@@ -69,28 +71,23 @@ if uploaded_file:
             df_order[col] = ""
             df_order[col] = df_order[col].astype(object)
 
-        # ==========================================
-        # 🔥 핵심 수정 부분: 엑셀 피벗테이블 공백 채우기
-        # ==========================================
-        # 1. 엑셀의 빈칸, 'NAN', '(비어 있음)' 등을 모두 실제 결측치(NA)로 변환
+        # 피벗 테이블 빈칸 채우기 안전장치
         df_inv['상품'] = df_inv['상품'].replace([np.nan, 'NAN', 'NONE', '', ' ', '(비어 있음)'], pd.NA)
-        
-        # 2. ffill()을 사용해 위의 진짜 상품코드를 아래 빈칸으로 쭉 복사해서 채워줌
         df_inv['상품'] = df_inv['상품'].ffill()
+        df_inv['상품명'] = df_inv['상품명'].ffill()
         
-        # 3. 그 후 정상적으로 문자열 데이터 정제
+        # 데이터 정제
         df_order['MECODE'] = df_order['MECODE'].astype(str).str.strip().str.upper()
         df_inv['상품'] = df_inv['상품'].astype(str).str.strip().str.upper()
         df_order['수량'] = to_safe_float(df_order['수량']).astype(float)
         df_inv['환산'] = to_safe_float(df_inv['환산']).astype(float)
-        # ==========================================
         
         # 유효일자 처리 (시간 제거)
         df_inv['유효일자_DT'] = pd.to_datetime(df_inv['유효일자'], errors='coerce')
         df_inv['유효일자_보존'] = df_inv['유효일자_DT'].fillna(pd.Timestamp('2099-12-31'))
         df_inv['유효일자_STR'] = df_inv['유효일자_DT'].dt.strftime('%Y-%m-%d').fillna('')
 
-        # [박스 입수량 계산] 열 이름에 'BOX'나 '입수량'이 들어간 아무 열이나 동적으로 찾음
+        # [박스 입수량 계산]
         box_col_candidates = [col for col in df_inv.columns if 'BOX' in str(col).upper() or '입수량' in str(col)]
         box_col_name = box_col_candidates[0] if box_col_candidates else None
         product_box_unit = {}
@@ -102,39 +99,52 @@ if uploaded_file:
                     product_box_unit[mecode] = int(box_vals.min())
 
         # ==========================================
-        # 🔥 [정확한 일수 적용] 재고 필터링 조건 강화
+        # 📅 유효일자 필터링 기준 계산
         # ==========================================
         today = pd.Timestamp.today().normalize()
         cutoff_date = today + pd.Timedelta(days=548)
         idx_short_shelf_life = (df_inv['유효일자_보존'] <= cutoff_date)
-
         idx_oc2 = (df_inv['상품'] == 'ME90621OC2') & (~df_inv['화주LOT'].astype(str).str.contains('분리배출'))
         
         df_inv_valid = df_inv[~(idx_oc2 | idx_short_shelf_life)].copy()
 
-        # [재고 그룹핑]
+        # [재고 그룹핑] - 상품명 컬럼도 함께 묶어줍니다.
         df_inv_valid['화주LOT'] = df_inv_valid['화주LOT'].astype(str)
         if not df_inv_valid.empty:
             inv_grouped = df_inv_valid.groupby(['상품', '유효일자_보존']).agg({
                 '환산': 'sum', 
                 '화주LOT': 'first', 
-                '유효일자_STR': 'first'
+                '유효일자_STR': 'first',
+                '상품명': 'first'
             }).reset_index()
         else:
-            inv_grouped = pd.DataFrame(columns=['상품', '유효일자_보존', '환산', '화주LOT', '유효일자_STR'])
+            inv_grouped = pd.DataFrame(columns=['상품', '유효일자_보존', '환산', '화주LOT', '유효일자_STR', '상품명'])
 
-        # 🚀 할당 로직
+        # 🚀 할당 로직 (하이브리드 2단계 매칭 적용)
         with st.spinner('재고 매칭 중...'):
             for i, row in df_order.iterrows():
                 mecode = str(row['MECODE'])
                 order_qty = float(row['수량'])
+                order_pname = str(row.get('상품명', ''))
                 
                 if mecode in ['NAN', '', 'NONE'] or order_qty <= 0:
                     df_order.at[i, '할당상태'] = "제외"
                     continue
                     
+                # 1단계: 상품코드로 정확히 일치하는 재고 조회
                 available_inv = inv_grouped[(inv_grouped['상품'] == mecode) & (inv_grouped['환산'] > 0)]
                 
+                # 🔥 [핵심 추가] 2단계: 코드가 안 맞으면 '상품명 키워드'로 유사 재고 강제 추적
+                if available_inv.empty and order_pname != '':
+                    # 예: '하다라보', '고쿠쥰', '밀크' 같은 핵심 키워드가 재고 상품명에 포함되어 있는지 확인
+                    keywords = [k for k in order_pname.split() if len(k) > 1 and k not in ['140ml', '150ml', '기획', '세트', 'ml']]
+                    if keywords:
+                        match_mask = inv_grouped['환산'] > 0
+                        for kw in keywords[:2]: # 안전하게 핵심 키워드 2개로 필터링
+                            match_mask = match_mask & inv_grouped['상품명'].str.contains(kw, na=False)
+                        available_inv = inv_grouped[match_mask]
+                
+                # 1, 2단계 모두 실패한 경우에만 재고없음 처리
                 if available_inv.empty:
                     df_order.at[i, 'LOT'], df_order.at[i, '유효일자'], df_order.at[i, '할당상태'] = '재고없음', '재고없음', '재고없음'
                     continue
@@ -165,7 +175,7 @@ if uploaded_file:
                     df_order.at[i, '부족시_유효일자'] = date_str
 
         # ==========================================
-        # 📊 화면 표시용 미리보기
+        # 📊 화면 표시용 결과 출력
         # ==========================================
         st.success("✅ 처리가 완료되었습니다!")
         
@@ -174,12 +184,18 @@ if uploaded_file:
         existing_view_cols = [c for c in view_cols if c in df_order.columns]
         
         df_display = df_order[existing_view_cols].head(100).copy()
-        df_safe_display = pd.DataFrame(
-            df_display.to_numpy().astype(str), 
-            columns=df_display.columns
-        )
-        
+        df_safe_display = pd.DataFrame(df_display.to_numpy().astype(str), columns=df_display.columns)
         st.dataframe(df_safe_display, use_container_width=True, hide_index=True)
+
+        # 🔍 진단용 알림창 (유효일자 제한으로 날아간 제품 확인)
+        st.markdown("---")
+        st.subheader("⚠️ 시스템 데이터 정밀 진단로그")
+        dropped_ggf = df_inv[(df_inv['상품'].str.contains('GGF', na=False)) & idx_short_shelf_life]
+        if not dropped_ggf.empty:
+            st.warning(f"🚨 알림: GGF(밀크) 재고 중 {len(dropped_ggf)}개 행이 유효일자 조건(548일 이하 남아있음)에 걸려 시스템에서 강제 제외된 이력이 있습니다. 유형을 확인하세요.")
+            st.dataframe(dropped_ggf[['상품', '상품명', '화주LOT', '유효일자', '환산']])
+        else:
+            st.info("💡 유효일자 필터링 진단 결과: GGF 제품 중 유효일자 부족으로 탈락한 재고는 없습니다. 2단계 이름 추적 매칭이 정상 작동합니다.")
 
         # ==========================================
         # 💾 엑셀 다운로드
