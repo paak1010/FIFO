@@ -38,6 +38,25 @@ if uploaded_file:
         df_order = df_order_raw.copy()
         df_inv = df_inv_raw.copy()
 
+        # ==========================================
+        # 🛡️ [재고 시트] 열 순서 및 이름 변경 방어 코드 (Robust 매칭)
+        # ==========================================
+        # 엑셀에서 열 순서를 바꾸거나 이름이 조금 달라져도 키워드로 찾아내서 내부적으로 통일시킵니다.
+        rename_dict = {}
+        for col in df_inv.columns:
+            col_str = str(col).replace(" ", "").upper()
+            if '상품' in col_str and '상품명' not in col_str:
+                rename_dict[col] = '상품'
+            elif 'LOT' in col_str:
+                rename_dict[col] = '화주LOT'
+            elif '유효일자' in col_str or '유통기한' in col_str:
+                rename_dict[col] = '유효일자'
+            elif '환산' in col_str:
+                rename_dict[col] = '환산'
+        
+        df_inv.rename(columns=rename_dict, inplace=True)
+        # ==========================================
+
         # 불필요한 열 제거
         if '잔여일수' in df_order.columns:
             start_idx = list(df_order.columns).index('잔여일수')
@@ -50,7 +69,7 @@ if uploaded_file:
             df_order[col] = ""
             df_order[col] = df_order[col].astype(object)
 
-        # 데이터 정제
+        # 데이터 정제 (매핑된 컬럼명을 안전하게 호출)
         df_order['MECODE'] = df_order['MECODE'].astype(str).str.strip().str.upper()
         df_inv['상품'] = df_inv['상품'].astype(str).str.strip().str.upper()
         df_order['수량'] = to_safe_float(df_order['수량']).astype(float)
@@ -61,8 +80,8 @@ if uploaded_file:
         df_inv['유효일자_보존'] = df_inv['유효일자_DT'].fillna(pd.Timestamp('2099-12-31'))
         df_inv['유효일자_STR'] = df_inv['유효일자_DT'].dt.strftime('%Y-%m-%d').fillna('')
 
-        # [박스 입수량 계산]
-        box_col_candidates = [col for col in df_inv.columns if 'BOX' in col.upper() or '입수량' in col]
+        # [박스 입수량 계산] 열 이름에 'BOX'나 '입수량'이 들어간 아무 열이나 동적으로 찾음
+        box_col_candidates = [col for col in df_inv.columns if 'BOX' in str(col).upper() or '입수량' in str(col)]
         box_col_name = box_col_candidates[0] if box_col_candidates else None
         product_box_unit = {}
         if box_col_name:
@@ -75,28 +94,24 @@ if uploaded_file:
         # ==========================================
         # 🔥 [정확한 일수 적용] 재고 필터링 조건 강화
         # ==========================================
-        # 1. 잔여 유효일자 정확히 548일 이하 필터링
         today = pd.Timestamp.today().normalize()
         cutoff_date = today + pd.Timedelta(days=548)
         idx_short_shelf_life = (df_inv['유효일자_보존'] <= cutoff_date)
 
-        # 2. 특정 불량/조건부 재고 필터링
-        # (수정됨) != 2028 에서 == 2028로 변경하여, 2028년 재고만 명확하게 삭제하고 2027년 등 정상 재고는 살림
-        idx_pmm = (df_inv['상품'] == 'ME00621PMM') & (df_inv['유효일자_DT'].dt.year == 2028)
         idx_oc2 = (df_inv['상품'] == 'ME90621OC2') & (~df_inv['화주LOT'].astype(str).str.contains('분리배출'))
         
-        # 3. 위 조건들에 해당하는 재고는 모두 제외하고 유효한 재고만 남김
-        df_inv_valid = df_inv[~(idx_pmm | idx_oc2 | idx_short_shelf_life)].copy()
+        df_inv_valid = df_inv[~(idx_oc2 | idx_short_shelf_life)].copy()
 
-        # [재고 그룹핑 - 수정됨: 화주LOT 데이터 유실 방지를 위해 그룹 기준에 추가]
+        # [재고 그룹핑]
         df_inv_valid['화주LOT'] = df_inv_valid['화주LOT'].astype(str)
         if not df_inv_valid.empty:
-            inv_grouped = df_inv_valid.groupby(['상품', '유효일자_보존', '화주LOT']).agg({
+            inv_grouped = df_inv_valid.groupby(['상품', '유효일자_보존']).agg({
                 '환산': 'sum', 
+                '화주LOT': 'first', 
                 '유효일자_STR': 'first'
             }).reset_index()
         else:
-            inv_grouped = pd.DataFrame(columns=['상품', '유효일자_보존', '화주LOT', '환산', '유효일자_STR'])
+            inv_grouped = pd.DataFrame(columns=['상품', '유효일자_보존', '환산', '화주LOT', '유효일자_STR'])
 
         # 🚀 할당 로직
         with st.spinner('재고 매칭 중...'):
@@ -107,34 +122,22 @@ if uploaded_file:
                 if mecode in ['NAN', '', 'NONE'] or order_qty <= 0:
                     df_order.at[i, '할당상태'] = "제외"
                     continue
-                
-                # 해당 상품의 박스 입수량 가져오기 (기본값 1)
-                box_unit = product_box_unit.get(mecode, 1)
-                
-                # (수정됨) 남은 재고가 '최소 1박스 이상'인 재고만 후보로 올림 (자투리 재고로 인한 박스단위부족 에러 방지)
-                available_inv = inv_grouped[(inv_grouped['상품'] == mecode) & (inv_grouped['환산'] >= box_unit)]
+                    
+                available_inv = inv_grouped[(inv_grouped['상품'] == mecode) & (inv_grouped['환산'] > 0)]
                 
                 if available_inv.empty:
                     df_order.at[i, 'LOT'], df_order.at[i, '유효일자'], df_order.at[i, '할당상태'] = '재고없음', '재고없음', '재고없음'
                     continue
 
-                # 유효일자가 짧은(빠른) 순서대로 정렬
-                sorted_inv = available_inv.sort_values(by='유효일자_보존')
-
-                # 전체 발주 수량을 한 번에 커버할 수 있는 재고가 있는지 먼저 확인
-                full_match_inv = sorted_inv[sorted_inv['환산'] >= order_qty]
-                
-                if not full_match_inv.empty:
-                    best_match = full_match_inv.iloc[0]
-                else:
-                    best_match = sorted_inv.iloc[0] # 없으면 그냥 제일 기한이 짧은 재고 선택 (부분할당 진행)
+                full_match_inv = available_inv[available_inv['환산'] >= order_qty]
+                best_match = full_match_inv.sort_values(by='유효일자_보존').iloc[0] if not full_match_inv.empty else available_inv.sort_values(by='유효일자_보존').iloc[0]
 
                 best_idx = best_match.name
                 max_qty = float(best_match['환산'])
                 lot_str = str(best_match['화주LOT'])
                 date_str = str(best_match['유효일자_STR']) 
                 
-                # (수정됨) 박스 단위 계산 로직 정교화
+                box_unit = product_box_unit.get(mecode, 1)
                 potential_qty = min(order_qty, max_qty)
                 allocated_boxes = int(potential_qty // box_unit)
                 allocated_qty = float(allocated_boxes * box_unit)
@@ -144,8 +147,6 @@ if uploaded_file:
                     df_order.at[i, 'LOT'] = lot_str
                     df_order.at[i, '유효일자'] = date_str
                     df_order.at[i, '할당상태'] = "정상할당" if allocated_qty == order_qty else f"부분할당({allocated_boxes}BOX)"
-                    
-                    # 할당된 수량만큼 재고 데이터베이스에서 차감
                     inv_grouped.at[best_idx, '환산'] -= allocated_qty
                 else:
                     df_order.at[i, '할당상태'] = '박스단위부족'
