@@ -98,6 +98,7 @@ if uploaded_file:
                 if not box_vals.empty:
                     product_box_unit[mecode] = int(box_vals.min())
 
+        
         # ==========================================
         # 📅 유효일자 필터링 기준 계산
         # ==========================================
@@ -108,6 +109,9 @@ if uploaded_file:
         
         df_inv_valid = df_inv[~(idx_oc2 | idx_short_shelf_life)].copy()
 
+# 특정 코드 데이터가 현재 데이터프레임에 살아있는지 화면에 직접 출력
+st.write("ME90621GGF 현재 상태 확인:", df[df['상품코드'].str.contains('ME90621GGF', na=False)])
+        
         # [재고 그룹핑] - 상품명 컬럼도 함께 묶어줍니다.
         df_inv_valid['화주LOT'] = df_inv_valid['화주LOT'].astype(str)
         if not df_inv_valid.empty:
