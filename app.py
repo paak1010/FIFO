@@ -1,228 +1,78 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import io
+from datetime import datetime
 
-# 1. 페이지 기본 설정
-st.set_page_config(page_title="올리브영 수주업로드 자동 입력 시스템", page_icon="🌿", layout="wide")
+# --- 페이지 설정 ---
+st.set_page_config(page_title="올리브영 재고 대시보드", layout="wide")
+st.title("📦 올리브영 재고 대시보드")
 
-# ==========================================
-# 🎨 사이드바 디자인
-# ==========================================
-with st.sidebar:
-    st.image("https://static.wikia.nocookie.net/mycompanies/images/d/de/Fe328a0f-a347-42a0-bd70-254853f35374.jpg/revision/latest?cb=20191117172510", use_container_width=True)
-    st.markdown("---")
-    st.header("⚙️ 작업 설정")
-    uploaded_file = st.file_uploader("올리브영 발주 엑셀 업로드", type=['xlsx'])
-    st.markdown("---")
-    st.caption("💡 자동 부분 할당 및 재고 차감 적용")
-    st.caption("✔️ 잔여 유효일자 548일 이하 제외")
-    st.caption("Developed by Jay")
+# --- 1. 파일 업로드 ---
+uploaded_file = st.file_uploader("재고 엑셀 파일(.xlsx, .xls)을 업로드하세요", type=['xlsx', 'xls'])
 
-# ==========================================
-# 메인 화면 디자인
-# ==========================================
-st.title("올리브영 수주업로드 자동 입력 시스템")
-st.markdown("Mentholatum : Moving The Heart")
-
-def to_safe_float(series):
-    """어떤 타입이 들어와도 숫자만 추출하여 float로 변환"""
-    cleaned = series.astype(str).str.replace(r'[^0-9.]', '', regex=True)
-    return pd.to_numeric(cleaned, errors='coerce').fillna(0)
-
-if uploaded_file:
+if uploaded_file is not None:
     try:
-        # 데이터 읽기
-        df_order_raw = pd.read_excel(uploaded_file, sheet_name='서식(수주업로드)', header=1)
-        df_inv_raw = pd.read_excel(uploaded_file, sheet_name='재고', header=2)
-        
-        df_order = df_order_raw.copy()
-        df_inv = df_inv_raw.copy()
+        # --- 2. 데이터 로드 및 ffill 처리 (피벗/병합 셀 빈칸 채우기) ---
+        df = pd.read_excel(uploaded_file)
+        df = df.ffill()
 
-        # ==========================================
-        # 🛡️ [재고 시트] 열 순서 및 이름 변경 방어 코드 (Robust 매칭)
-        # ==========================================
-        rename_dict = {}
-        for col in df_inv.columns:
-            col_str = str(col).replace(" ", "").upper()
-            if '상품명' in col_str:
-                rename_dict[col] = '상품명'
-            elif '상품' in col_str:
-                rename_dict[col] = '상품'
-            elif 'LOT' in col_str:
-                rename_dict[col] = '화주LOT'
-            elif '유효일자' in col_str or '유통기한' in col_str:
-                rename_dict[col] = '유효일자'
-            elif '환산' in col_str:
-                rename_dict[col] = '환산'
-        
-        df_inv.rename(columns=rename_dict, inplace=True)
-        # ==========================================
+        # --- 3. 핵심 전처리 (공백 제거 및 대소문자 통일) ---
+        # 상품코드가 엑셀 내에 다른 이름(예: 'Item Code')으로 되어있다면 컬럼명을 수정해주세요.
+        if '상품코드' in df.columns:
+            # 앞뒤 공백 완전 제거 후 대문자로 강제 변환
+            df['상품코드'] = df['상품코드'].astype(str).str.strip().str.upper()
+        if '상품명' in df.columns:
+            df['상품명'] = df['상품명'].astype(str).str.strip()
 
-        # 불필요한 열 제거
-        if '잔여일수' in df_order.columns:
-            start_idx = list(df_order.columns).index('잔여일수')
-            cols_to_drop = df_order.columns[start_idx:]
-            df_order = df_order.drop(columns=cols_to_drop)
-
-        # 결과 컬럼 초기화 (범용 타입 지정)
-        new_cols = ['LOT', '유효일자', '할당상태', '부족시_최대가능수량', '부족시_LOT', '부족시_유효일자']
-        for col in new_cols:
-            df_order[col] = ""
-            df_order[col] = df_order[col].astype(object)
-
-        # 피벗 테이블 빈칸 채우기 안전장치
-        df_inv['상품'] = df_inv['상품'].replace([np.nan, 'NAN', 'NONE', '', ' ', '(비어 있음)'], pd.NA)
-        df_inv['상품'] = df_inv['상품'].ffill()
-        df_inv['상품명'] = df_inv['상품명'].ffill()
-        
-        # 데이터 정제
-        df_order['MECODE'] = df_order['MECODE'].astype(str).str.strip().str.upper()
-        df_inv['상품'] = df_inv['상품'].astype(str).str.strip().str.upper()
-        df_order['수량'] = to_safe_float(df_order['수량']).astype(float)
-        df_inv['환산'] = to_safe_float(df_inv['환산']).astype(float)
-        
-        # 유효일자 처리 (시간 제거)
-        df_inv['유효일자_DT'] = pd.to_datetime(df_inv['유효일자'], errors='coerce')
-        df_inv['유효일자_보존'] = df_inv['유효일자_DT'].fillna(pd.Timestamp('2099-12-31'))
-        df_inv['유효일자_STR'] = df_inv['유효일자_DT'].dt.strftime('%Y-%m-%d').fillna('')
-
-        # [박스 입수량 계산]
-        box_col_candidates = [col for col in df_inv.columns if 'BOX' in str(col).upper() or '입수량' in str(col)]
-        box_col_name = box_col_candidates[0] if box_col_candidates else None
-        product_box_unit = {}
-        if box_col_name:
-            for mecode, group in df_inv.groupby('상품'):
-                box_vals = to_safe_float(group[box_col_name])
-                box_vals = box_vals[box_vals > 0]
-                if not box_vals.empty:
-                    product_box_unit[mecode] = int(box_vals.min())
-
-        
-        # ==========================================
-        # 📅 유효일자 필터링 기준 계산
-        # ==========================================
-        today = pd.Timestamp.today().normalize()
-        cutoff_date = today + pd.Timedelta(days=548)
-        idx_short_shelf_life = (df_inv['유효일자_보존'] <= cutoff_date)
-        idx_oc2 = (df_inv['상품'] == 'ME90621OC2') & (~df_inv['화주LOT'].astype(str).str.contains('분리배출'))
-        
-        df_inv_valid = df_inv[~(idx_oc2 | idx_short_shelf_life)].copy()
-
-# 특정 코드 데이터가 현재 데이터프레임에 살아있는지 화면에 직접 출력
-st.write("ME90621GGF 현재 상태 확인:", df[df['상품코드'].str.contains('ME90621GGF', na=False)])
-        
-        # [재고 그룹핑] - 상품명 컬럼도 함께 묶어줍니다.
-        df_inv_valid['화주LOT'] = df_inv_valid['화주LOT'].astype(str)
-        if not df_inv_valid.empty:
-            inv_grouped = df_inv_valid.groupby(['상품', '유효일자_보존']).agg({
-                '환산': 'sum', 
-                '화주LOT': 'first', 
-                '유효일자_STR': 'first',
-                '상품명': 'first'
-            }).reset_index()
-        else:
-            inv_grouped = pd.DataFrame(columns=['상품', '유효일자_보존', '환산', '화주LOT', '유효일자_STR', '상품명'])
-
-        # 🚀 할당 로직 (하이브리드 2단계 매칭 적용)
-        with st.spinner('재고 매칭 중...'):
-            for i, row in df_order.iterrows():
-                mecode = str(row['MECODE'])
-                order_qty = float(row['수량'])
-                order_pname = str(row.get('상품명', ''))
-                
-                if mecode in ['NAN', '', 'NONE'] or order_qty <= 0:
-                    df_order.at[i, '할당상태'] = "제외"
-                    continue
-                    
-                # 1단계: 상품코드로 정확히 일치하는 재고 조회
-                available_inv = inv_grouped[(inv_grouped['상품'] == mecode) & (inv_grouped['환산'] > 0)]
-                
-                # 🔥 [핵심 추가] 2단계: 코드가 안 맞으면 '상품명 키워드'로 유사 재고 강제 추적
-                if available_inv.empty and order_pname != '':
-                    # 예: '하다라보', '고쿠쥰', '밀크' 같은 핵심 키워드가 재고 상품명에 포함되어 있는지 확인
-                    keywords = [k for k in order_pname.split() if len(k) > 1 and k not in ['140ml', '150ml', '기획', '세트', 'ml']]
-                    if keywords:
-                        match_mask = inv_grouped['환산'] > 0
-                        for kw in keywords[:2]: # 안전하게 핵심 키워드 2개로 필터링
-                            match_mask = match_mask & inv_grouped['상품명'].str.contains(kw, na=False)
-                        available_inv = inv_grouped[match_mask]
-                
-                # 1, 2단계 모두 실패한 경우에만 재고없음 처리
-                if available_inv.empty:
-                    df_order.at[i, 'LOT'], df_order.at[i, '유효일자'], df_order.at[i, '할당상태'] = '재고없음', '재고없음', '재고없음'
-                    continue
-
-                full_match_inv = available_inv[available_inv['환산'] >= order_qty]
-                best_match = full_match_inv.sort_values(by='유효일자_보존').iloc[0] if not full_match_inv.empty else available_inv.sort_values(by='유효일자_보존').iloc[0]
-
-                best_idx = best_match.name
-                max_qty = float(best_match['환산'])
-                lot_str = str(best_match['화주LOT'])
-                date_str = str(best_match['유효일자_STR']) 
-                
-                box_unit = product_box_unit.get(mecode, 1)
-                potential_qty = min(order_qty, max_qty)
-                allocated_boxes = int(potential_qty // box_unit)
-                allocated_qty = float(allocated_boxes * box_unit)
-
-                if allocated_qty > 0:
-                    df_order.at[i, '수량'] = allocated_qty
-                    df_order.at[i, 'LOT'] = lot_str
-                    df_order.at[i, '유효일자'] = date_str
-                    df_order.at[i, '할당상태'] = "정상할당" if allocated_qty == order_qty else f"부분할당({allocated_boxes}BOX)"
-                    inv_grouped.at[best_idx, '환산'] -= allocated_qty
-                else:
-                    df_order.at[i, '할당상태'] = '박스단위부족'
-                    df_order.at[i, '부족시_최대가능수량'] = max_qty
-                    df_order.at[i, '부족시_LOT'] = lot_str
-                    df_order.at[i, '부족시_유효일자'] = date_str
-
-        # ==========================================
-        # 📊 화면 표시용 결과 출력
-        # ==========================================
-        st.success("✅ 처리가 완료되었습니다!")
-        
-        st.subheader("📊 작업 결과 미리보기 (상위 100건)")
-        view_cols = ['MECODE', '상품명', '수량', 'LOT', '유효일자', '할당상태']
-        existing_view_cols = [c for c in view_cols if c in df_order.columns]
-        
-        df_display = df_order[existing_view_cols].head(100).copy()
-        df_safe_display = pd.DataFrame(df_display.to_numpy().astype(str), columns=df_display.columns)
-        st.dataframe(df_safe_display, use_container_width=True, hide_index=True)
-
-        # 🔍 진단용 알림창 (유효일자 제한으로 날아간 제품 확인)
+        # --- 4. 🚨 긴급 디버깅: ME90621GGF 생존 확인 ---
         st.markdown("---")
-        st.subheader("⚠️ 시스템 데이터 정밀 진단로그")
-        dropped_ggf = df_inv[(df_inv['상품'].str.contains('GGF', na=False)) & idx_short_shelf_life]
-        if not dropped_ggf.empty:
-            st.warning(f"🚨 알림: GGF(밀크) 재고 중 {len(dropped_ggf)}개 행이 유효일자 조건(548일 이하 남아있음)에 걸려 시스템에서 강제 제외된 이력이 있습니다. 유형을 확인하세요.")
-            st.dataframe(dropped_ggf[['상품', '상품명', '화주LOT', '유효일자', '환산']])
-        else:
-            st.info("💡 유효일자 필터링 진단 결과: GGF 제품 중 유효일자 부족으로 탈락한 재고는 없습니다. 2단계 이름 추적 매칭이 정상 작동합니다.")
-
-        # ==========================================
-        # 💾 엑셀 다운로드
-        # ==========================================
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-            df_order.to_excel(writer, index=False, sheet_name='서식(수주업로드)')
-            workbook = writer.book
-            worksheet = writer.sheets['서식(수주업로드)']
-            text_format = workbook.add_format({'num_format': '@'}) 
+        st.subheader("🔍 [디버깅] ME90621GGF 추적 모니터")
+        if '상품코드' in df.columns:
+            debug_df = df[df['상품코드'] == 'ME90621GGF']
+            if not debug_df.empty:
+                st.success("✅ 원본 데이터 및 전처리 직후에 'ME90621GGF'가 정상적으로 인식되었습니다!")
+                st.dataframe(debug_df)
+            else:
+                st.error("❌ 전처리 직후 데이터에서 'ME90621GGF'를 찾을 수 없습니다. 원본 엑셀 파일에 해당 코드가 누락되었거나 컬럼명이 다를 수 있습니다.")
+        
+        # --- 5. 유효일자 필터링 로직 (에러 방지 적용) ---
+        if '유효일자' in df.columns:
+            # 날짜 형식으로 변환 불가능한 값은 에러를 내지 않고 NaT(빈 값)으로 처리
+            df['유효일자_DT'] = pd.to_datetime(df['유효일자'], errors='coerce')
             
-            for target_col in ['유효일자', '부족시_유효일자']:
-                if target_col in df_order.columns:
-                    idx = df_order.columns.get_loc(target_col)
-                    worksheet.set_column(idx, idx, 15, text_format)
+            # 오늘 날짜 기준
+            today = pd.to_datetime('today')
+            
+            # 기한이 남았거나(오늘 이후), 날짜 파싱이 안 된 데이터도 일단 살려둠 (오류로 인한 누락 방지)
+            df_filtered = df[(df['유효일자_DT'] >= today) | (df['유효일자_DT'].isna())]
+            
+            # 화면 표시를 위해 임시 계산용 컬럼은 제외
+            df_display = df_filtered.drop(columns=['유효일자_DT'])
+        else:
+            df_display = df.copy()
 
-        st.download_button(
-            label="💾 최종 완성본 엑셀 다운로드", 
-            data=buffer.getvalue(), 
-            file_name="올리브영_자동할당완료.xlsx", 
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-            type="primary"
-        )
+        st.markdown("---")
+
+        # --- 6. 하이브리드 매칭 검색 ---
+        st.subheader("🔎 재고 검색 (코드 & 상품명)")
+        search_query = st.text_input("찾으시는 상품코드나 상품명 키워드를 입력하세요.")
+
+        if search_query:
+            search_query = search_query.strip().upper()
+            
+            # 코드 일치 여부 확인
+            mask_code = df_display['상품코드'].str.contains(search_query, na=False) if '상품코드' in df_display.columns else False
+            # 상품명 포함 여부 확인 (대소문자 무시)
+            mask_name = df_display['상품명'].str.upper().str.contains(search_query, na=False) if '상품명' in df_display.columns else False
+            
+            # 둘 중 하나라도 맞으면 화면에 표시
+            result_df = df_display[mask_code | mask_name]
+            
+            st.write(f"검색 결과: **{len(result_df)}** 건")
+            st.dataframe(result_df)
+        else:
+            # 검색어가 없을 때는 전체 데이터 표시
+            st.subheader("📊 전체 재고 리스트")
+            st.dataframe(df_display)
 
     except Exception as e:
-        st.error(f"오류 발생: {e}")
+        st.error(f"데이터를 처리하는 중 오류가 발생했습니다: {e}")
