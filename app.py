@@ -1,119 +1,197 @@
 import streamlit as st
 import pandas as pd
-import math
-from datetime import datetime
+import io
 
-st.set_page_config(page_title="재고 할당 대시보드", layout="wide")
-st.title("📦 재고 할당 및 대시보드 (LOT별 관리)")
+# 1. 페이지 기본 설정
+st.set_page_config(page_title="올리브영 수주업로드 자동 입력 시스템", page_icon="🌿", layout="wide")
 
-uploaded_file = st.file_uploader("재고 엑셀 파일을 업로드하세요 (.xlsx, .xls)", type=['xlsx', 'xls'])
+# ==========================================
+# 🎨 사이드바 디자인
+# ==========================================
+with st.sidebar:
+    st.image("https://static.wikia.nocookie.net/mycompanies/images/d/de/Fe328a0f-a347-42a0-bd70-254853f35374.jpg/revision/latest?cb=20191117172510", use_container_width=True)
+    st.markdown("---")
+    st.header("⚙️ 작업 설정")
+    uploaded_file = st.file_uploader("올리브영 발주 엑셀 업로드", type=['xlsx'])
+    st.markdown("---")
+    st.caption("💡 자동 부분 할당 및 재고 차감 적용")
+    st.caption("✔️ 잔여 유효일자 548일 이하 제외")
+    st.caption("Developed by Jay")
 
-# --- 엑셀 열 순서 변경 방어 (자동 키워드 감지) ---
-def find_column(df, keywords):
-    for col in df.columns:
-        for keyword in keywords:
-            if keyword in str(col).replace(" ", ""):
-                return col
-    return None
+# ==========================================
+# 메인 화면 디자인
+# ==========================================
+st.title("올리브영 수주업로드 자동 입력 시스템")
+st.markdown("Mentholatum : Moving The Heart")
+
+def to_safe_float(series):
+    """어떤 타입이 들어와도 숫자만 추출하여 float로 변환"""
+    cleaned = series.astype(str).str.replace(r'[^0-9.]', '', regex=True)
+    return pd.to_numeric(cleaned, errors='coerce').fillna(0)
 
 if uploaded_file:
-    # 1. 데이터 로드 및 피벗/병합 빈 셀 채우기
-    df = pd.read_excel(uploaded_file)
-    df = df.ffill()
-
-    # 열 자동 매칭
-    col_code = find_column(df, ['상품코드', '제품코드', 'ItemCode'])
-    col_name = find_column(df, ['상품명', '제품명'])
-    col_date = find_column(df, ['유효일자', '유통기한'])
-    col_lot = find_column(df, ['LOT', '로트'])
-    col_qty = find_column(df, ['수량', '재고'])
-    col_status = find_column(df, ['상태', '구분']) 
-    
-    if col_code:
-        # ✨ 핵심 수정: ME90621GGF 공백 찌꺼기 및 대소문자 인식 문제 완벽 해결
-        df[col_code] = df[col_code].astype(str).str.strip().str.upper()
+    try:
+        # 데이터 읽기
+        df_order_raw = pd.read_excel(uploaded_file, sheet_name='서식(수주업로드)', header=1)
+        df_inv_raw = pd.read_excel(uploaded_file, sheet_name='재고', header=2)
         
-    if col_qty:
-        # 오류 방지를 위한 데이터 타입 정제
-        df[col_qty] = pd.to_numeric(df[col_qty], errors='coerce').fillna(0)
+        df_order = df_order_raw.copy()
+        df_inv = df_inv_raw.copy()
 
-    # 2. 회송예정, 불량 재고 등 가용 불가능한 항목 필터링
-    if col_status:
-        df = df[~df[col_status].str.contains('회송|불량', na=False, regex=True)]
+        # 불필요한 열 제거
+        if '잔여일수' in df_order.columns:
+            start_idx = list(df_order.columns).index('잔여일수')
+            cols_to_drop = df_order.columns[start_idx:]
+            df_order = df_order.drop(columns=cols_to_drop)
 
-    # 3. 유효기간 548일 이하 재고 제외 로직
-    if col_date:
-        df['유효일자_DT'] = pd.to_datetime(df[col_date], errors='coerce')
-        today = pd.to_datetime('today')
-        df['남은일수'] = (df['유효일자_DT'] - today).dt.days
-        
-        # 548일 초과거나, 날짜 데이터가 비어있는 경우만 가용 재고로 인정
-        df = df[(df['남은일수'] > 548) | (df['유효일자_DT'].isna())]
+        # 결과 컬럼 초기화 (범용 타입 지정)
+        new_cols = ['LOT', '유효일자', '할당상태', '부족시_최대가능수량', '부족시_LOT', '부족시_유효일자']
+        for col in new_cols:
+            df_order[col] = ""
+            df_order[col] = df_order[col].astype(object)
 
-    # 4. LOT 및 유효일자별 재고 합산 처리
-    if col_code and col_lot and col_qty:
-        groupby_cols = [col_code]
-        if col_name: groupby_cols.append(col_name)
-        groupby_cols.append(col_lot)
-        if col_date: groupby_cols.append(col_date)
+        # 데이터 정제
+        df_order['MECODE'] = df_order['MECODE'].astype(str).str.strip().str.upper()
+        df_inv['상품'] = df_inv['상품'].astype(str).str.strip().str.upper()
+        df_order['수량'] = to_safe_float(df_order['수량']).astype(float)
+        df_inv['환산'] = to_safe_float(df_inv['환산']).astype(float)
         
-        # 제품 및 로트별 합산
-        df_summary = df.groupby(groupby_cols, as_index=False)[col_qty].sum()
-        
-        st.subheader("📊 LOT별 가용 재고 현황 (548일 초과)")
-        st.dataframe(df_summary)
+        # 유효일자 처리 (시간 제거)
+        df_inv['유효일자_DT'] = pd.to_datetime(df_inv['유효일자'], errors='coerce')
+        df_inv['유효일자_보존'] = df_inv['유효일자_DT'].fillna(pd.Timestamp('2099-12-31'))
+        df_inv['유효일자_STR'] = df_inv['유효일자_DT'].dt.strftime('%Y-%m-%d').fillna('')
 
-        st.markdown("---")
-        
-        # 5. 실시간 재고 차감 및 부분 할당 (박스 단위 계산 복구)
-        st.subheader("📦 실시간 할당 및 박스 시뮬레이션")
-        if 'inventory' not in st.session_state:
-            st.session_state.inventory = df_summary.copy()
+        # [박스 입수량 계산]
+        box_col_candidates = [col for col in df_inv.columns if 'BOX' in col.upper() or '입수량' in col]
+        box_col_name = box_col_candidates[0] if box_col_candidates else None
+        product_box_unit = {}
+        if box_col_name:
+            for mecode, group in df_inv.groupby('상품'):
+                box_vals = to_safe_float(group[box_col_name])
+                box_vals = box_vals[box_vals > 0]
+                if not box_vals.empty:
+                    product_box_unit[mecode] = int(box_vals.min())
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            box_capacity = st.number_input("1박스당 입수량", min_value=1, value=10, step=1)
-        with col2:
-            search_code = st.text_input("할당할 상품코드 입력", placeholder="예: ME90621GGF")
-        with col3:
-            order_qty = st.number_input("할당 요청 수량", min_value=1, step=1)
+        # ==========================================
+        # 🔥 [정확한 일수 적용] 재고 필터링 조건 강화
+        # ==========================================
+        # 1. 잔여 유효일자 정확히 548일 이하 필터링
+        today = pd.Timestamp.today().normalize()
+        cutoff_date = today + pd.Timedelta(days=548)
+        idx_short_shelf_life = (df_inv['유효일자_보존'] <= cutoff_date)
+
+        # 2. 특정 불량/조건부 재고 필터링
+        # (수정됨) != 2028 에서 == 2028로 변경하여, 2028년 재고만 명확하게 삭제하고 2027년 등 정상 재고는 살림
+        idx_pmm = (df_inv['상품'] == 'ME00621PMM') & (df_inv['유효일자_DT'].dt.year == 2028)
+        idx_oc2 = (df_inv['상품'] == 'ME90621OC2') & (~df_inv['화주LOT'].astype(str).str.contains('분리배출'))
         
-        if st.button("할당 실행"):
-            search_code = search_code.strip().upper()
-            target_items = st.session_state.inventory[st.session_state.inventory[col_code] == search_code]
+        # 3. 위 조건들에 해당하는 재고는 모두 제외하고 유효한 재고만 남김
+        df_inv_valid = df_inv[~(idx_pmm | idx_oc2 | idx_short_shelf_life)].copy()
+
+        # [재고 그룹핑 - 수정됨: 화주LOT 데이터 유실 방지를 위해 그룹 기준에 추가]
+        df_inv_valid['화주LOT'] = df_inv_valid['화주LOT'].astype(str)
+        if not df_inv_valid.empty:
+            inv_grouped = df_inv_valid.groupby(['상품', '유효일자_보존', '화주LOT']).agg({
+                '환산': 'sum', 
+                '유효일자_STR': 'first'
+            }).reset_index()
+        else:
+            inv_grouped = pd.DataFrame(columns=['상품', '유효일자_보존', '화주LOT', '환산', '유효일자_STR'])
+
+        # 🚀 할당 로직
+        with st.spinner('재고 매칭 중...'):
+            for i, row in df_order.iterrows():
+                mecode = str(row['MECODE'])
+                order_qty = float(row['수량'])
+                
+                if mecode in ['NAN', '', 'NONE'] or order_qty <= 0:
+                    df_order.at[i, '할당상태'] = "제외"
+                    continue
+                
+                # 해당 상품의 박스 입수량 가져오기 (기본값 1)
+                box_unit = product_box_unit.get(mecode, 1)
+                
+                # (수정됨) 남은 재고가 '최소 1박스 이상'인 재고만 후보로 올림 (자투리 재고로 인한 박스단위부족 에러 방지)
+                available_inv = inv_grouped[(inv_grouped['상품'] == mecode) & (inv_grouped['환산'] >= box_unit)]
+                
+                if available_inv.empty:
+                    df_order.at[i, 'LOT'], df_order.at[i, '유효일자'], df_order.at[i, '할당상태'] = '재고없음', '재고없음', '재고없음'
+                    continue
+
+                # 유효일자가 짧은(빠른) 순서대로 정렬
+                sorted_inv = available_inv.sort_values(by='유효일자_보존')
+
+                # 전체 발주 수량을 한 번에 커버할 수 있는 재고가 있는지 먼저 확인
+                full_match_inv = sorted_inv[sorted_inv['환산'] >= order_qty]
+                
+                if not full_match_inv.empty:
+                    best_match = full_match_inv.iloc[0]
+                else:
+                    best_match = sorted_inv.iloc[0] # 없으면 그냥 제일 기한이 짧은 재고 선택 (부분할당 진행)
+
+                best_idx = best_match.name
+                max_qty = float(best_match['환산'])
+                lot_str = str(best_match['화주LOT'])
+                date_str = str(best_match['유효일자_STR']) 
+                
+                # (수정됨) 박스 단위 계산 로직 정교화
+                potential_qty = min(order_qty, max_qty)
+                allocated_boxes = int(potential_qty // box_unit)
+                allocated_qty = float(allocated_boxes * box_unit)
+
+                if allocated_qty > 0:
+                    df_order.at[i, '수량'] = allocated_qty
+                    df_order.at[i, 'LOT'] = lot_str
+                    df_order.at[i, '유효일자'] = date_str
+                    df_order.at[i, '할당상태'] = "정상할당" if allocated_qty == order_qty else f"부분할당({allocated_boxes}BOX)"
+                    
+                    # 할당된 수량만큼 재고 데이터베이스에서 차감
+                    inv_grouped.at[best_idx, '환산'] -= allocated_qty
+                else:
+                    df_order.at[i, '할당상태'] = '박스단위부족'
+                    df_order.at[i, '부족시_최대가능수량'] = max_qty
+                    df_order.at[i, '부족시_LOT'] = lot_str
+                    df_order.at[i, '부족시_유효일자'] = date_str
+
+        # ==========================================
+        # 📊 화면 표시용 미리보기
+        # ==========================================
+        st.success("✅ 처리가 완료되었습니다!")
+        
+        st.subheader("📊 작업 결과 미리보기 (상위 100건)")
+        view_cols = ['MECODE', '상품명', '수량', 'LOT', '유효일자', '할당상태']
+        existing_view_cols = [c for c in view_cols if c in df_order.columns]
+        
+        df_display = df_order[existing_view_cols].head(100).copy()
+        df_safe_display = pd.DataFrame(
+            df_display.to_numpy().astype(str), 
+            columns=df_display.columns
+        )
+        
+        st.dataframe(df_safe_display, use_container_width=True, hide_index=True)
+
+        # ==========================================
+        # 💾 엑셀 다운로드
+        # ==========================================
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            df_order.to_excel(writer, index=False, sheet_name='서식(수주업로드)')
+            workbook = writer.book
+            worksheet = writer.sheets['서식(수주업로드)']
+            text_format = workbook.add_format({'num_format': '@'}) 
             
-            if target_items.empty:
-                st.error(f"[{search_code}] 가용 재고가 부족하거나 유효기간(548일 이하) 기준 미달입니다.")
-            else:
-                remaining_order = order_qty
-                allocated_log = []
-                
-                for idx, row in target_items.iterrows():
-                    if remaining_order <= 0:
-                        break
-                        
-                    available_qty = row[col_qty]
-                    if available_qty > 0:
-                        # 가용 재고 내에서만 부분 할당 실행
-                        allocate_qty = min(remaining_order, available_qty)
-                        st.session_state.inventory.at[idx, col_qty] -= allocate_qty
-                        remaining_order -= allocate_qty
-                        
-                        # 박스 단위 계산
-                        boxes = math.floor(allocate_qty / box_capacity)
-                        ea = allocate_qty % box_capacity
-                        
-                        allocated_log.append({
-                            '상품코드': row[col_code],
-                            'LOT': row[col_lot],
-                            '할당수량': allocate_qty,
-                            '포장 단위': f"{boxes} Box + {ea} EA"
-                        })
-                
-                if allocated_log:
-                    st.success(f"✅ 할당 완료! (미할당 잔여 주문량: {remaining_order})")
-                    st.table(pd.DataFrame(allocated_log))
-                    st.write("실시간 반영 후 남은 재고:")
-                    st.dataframe(st.session_state.inventory[st.session_state.inventory[col_code] == search_code])
-    else:
-        st.warning("⚠️ 필수 열(상품코드, LOT, 수량)을 인식할 수 없습니다. 엑셀 컬럼명을 다시 확인해주세요.")
+            for target_col in ['유효일자', '부족시_유효일자']:
+                if target_col in df_order.columns:
+                    idx = df_order.columns.get_loc(target_col)
+                    worksheet.set_column(idx, idx, 15, text_format)
+
+        st.download_button(
+            label="💾 최종 완성본 엑셀 다운로드", 
+            data=buffer.getvalue(), 
+            file_name="올리브영_자동할당완료.xlsx", 
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+            type="primary"
+        )
+
+    except Exception as e:
+        st.error(f"오류 발생: {e}")
