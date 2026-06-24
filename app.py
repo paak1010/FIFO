@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import io
 
 # 1. 페이지 기본 설정
@@ -41,7 +42,6 @@ if uploaded_file:
         # ==========================================
         # 🛡️ [재고 시트] 열 순서 및 이름 변경 방어 코드 (Robust 매칭)
         # ==========================================
-        # 엑셀에서 열 순서를 바꾸거나 이름이 조금 달라져도 키워드로 찾아내서 내부적으로 통일시킵니다.
         rename_dict = {}
         for col in df_inv.columns:
             col_str = str(col).replace(" ", "").upper()
@@ -69,11 +69,21 @@ if uploaded_file:
             df_order[col] = ""
             df_order[col] = df_order[col].astype(object)
 
-        # 데이터 정제 (매핑된 컬럼명을 안전하게 호출)
+        # ==========================================
+        # 🔥 핵심 수정 부분: 엑셀 피벗테이블 공백 채우기
+        # ==========================================
+        # 1. 엑셀의 빈칸, 'NAN', '(비어 있음)' 등을 모두 실제 결측치(NA)로 변환
+        df_inv['상품'] = df_inv['상품'].replace([np.nan, 'NAN', 'NONE', '', ' ', '(비어 있음)'], pd.NA)
+        
+        # 2. ffill()을 사용해 위의 진짜 상품코드를 아래 빈칸으로 쭉 복사해서 채워줌
+        df_inv['상품'] = df_inv['상품'].ffill()
+        
+        # 3. 그 후 정상적으로 문자열 데이터 정제
         df_order['MECODE'] = df_order['MECODE'].astype(str).str.strip().str.upper()
         df_inv['상품'] = df_inv['상품'].astype(str).str.strip().str.upper()
         df_order['수량'] = to_safe_float(df_order['수량']).astype(float)
         df_inv['환산'] = to_safe_float(df_inv['환산']).astype(float)
+        # ==========================================
         
         # 유효일자 처리 (시간 제거)
         df_inv['유효일자_DT'] = pd.to_datetime(df_inv['유효일자'], errors='coerce')
